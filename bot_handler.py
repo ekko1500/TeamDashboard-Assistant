@@ -27,6 +27,7 @@ def send_telegram_message(chat_id, text):
 def handle_webhook(update_data):
     """Process incoming Telegram webhook updates"""
     try:
+        logger.info(f"Handling update: {update_data}")
         # Extract message details
         message = update_data.get("message", {})
         chat_id = message.get("chat", {}).get("id")
