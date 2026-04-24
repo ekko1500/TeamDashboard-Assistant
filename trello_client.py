@@ -77,25 +77,36 @@ def get_list_cards(list_id):
             "token": TRELLO_TOKEN,
             "fields": "name,shortUrl"
         }
+        logger.info(f"Fetching cards for list {list_id}...")
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        return response.json()
+        cards = response.json()
+        logger.info(f"Successfully fetched {len(cards)} cards")
+        return cards
     except Exception as e:
         logger.error(f"Failed to fetch cards: {e}")
-        return []
+        return None  # Return None instead of [] to indicate an error
 
-def archive_card(card_id):
-    """Archive (close) a card"""
+def update_card(card_id, name=None, closed=False, due_complete=False):
+    """Update card properties (name, closed status, due date completion)"""
     try:
         url = f"https://api.trello.com/1/cards/{card_id}"
         params = {
             "key": TRELLO_API_KEY,
-            "token": TRELLO_TOKEN,
-            "closed": "true"
+            "token": TRELLO_TOKEN
         }
-        response = requests.put(url, params=params, timeout=10)
+        data = {}
+        if name:
+            data["name"] = name
+        if closed:
+            data["closed"] = "true"
+        if due_complete:
+            data["dueComplete"] = "true"
+            
+        logger.info(f"Updating card {card_id} with data: {data}")
+        response = requests.put(url, params=params, json=data, timeout=10)
         response.raise_for_status()
         return True
     except Exception as e:
-        logger.error(f"Failed to archive card: {e}")
+        logger.error(f"Failed to update card: {e}")
         return False

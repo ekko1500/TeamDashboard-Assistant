@@ -6,7 +6,7 @@ from trello_client import (
     get_trello_boards, 
     get_board_lists, 
     get_list_cards, 
-    archive_card
+    update_card
 )
 
 logger = logging.getLogger(__name__)
@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 # Simple in-memory storage for user list IDs (Reset on restart)
 # In production, use a database.
 user_default_lists = {}
-# Cache to map numbers (1, 2, 3...) to Trello Card IDs
-user_task_cache = {} # chat_id -> [card_id1, card_id2, ...]
+# Cache to map numbers (1, 2, 3...) to Trello Card data
+# chat_id -> [{"id": "...", "name": "..."}, ...]
+user_task_cache = {} 
 
 def send_telegram_message(chat_id, text):
     """Send a message back to Telegram user"""
@@ -54,7 +55,7 @@ def handle_webhook(update_data):
                 f"📝 <b>Commands:</b>\n"
                 f"/add &lt;task&gt; - Add a task\n"
                 f"/tasks - List your pending tasks\n"
-                f"/done &lt;number&gt; - Mark a task as complete\n"
+                f"/done &lt;number&gt; - Mark a task as checked\n"
                 f"/help - Show all commands\n"
                 f"/boards - List your Trello boards\n\n"
                 f"<b>Example:</b>\n"
@@ -70,14 +71,14 @@ def handle_webhook(update_data):
                 f"<b>Core Commands:</b>\n"
                 f"/add &lt;task&gt; - Add task to your Trello list\n"
                 f"/tasks - View all pending tasks (numbered)\n"
-                f"/done &lt;number&gt; - Archive a task by its number\n\n"
+                f"/done &lt;number&gt; - Mark a task as checked by its number\n\n"
                 f"<b>Setup Commands:</b>\n"
                 f"/boards - View all your Trello boards\n"
                 f"/lists &lt;board_id&gt; - View lists in a board\n"
                 f"/setlist &lt;list_id&gt; - Set default list for tasks\n\n"
                 f"<b>Example Flow:</b>\n"
                 f"1. `/tasks` -> Lists tasks with (1), (2)...\n"
-                f"2. `/done 1` -> Archives task #1"
+                f"2. `/done 1` -> Marks task #1 as checked ✅"
             )
             send_telegram_message(chat_id, help_msg)
             return
@@ -94,18 +95,23 @@ def handle_webhook(update_data):
             send_telegram_message(chat_id, "🔍 Fetching your tasks...")
             cards = get_list_cards(target_list_id)
             
+            if cards is None:
+                send_telegram_message(chat_id, "❌ Error fetching tasks from Trello. Please check your credentials.")
+                return
+            
             if not cards:
                 send_telegram_message(chat_id, "✨ You have no pending tasks!")
                 return
             
-            # Update cache and build message
-            user_task_cache[chat_id] = [card.get('id') for card in cards]
+            # Update cache with full card objects
+            user_task_cache[chat_id] = cards
             
             msg = "📋 <b>Your Pending Tasks:</b>\n\n"
             for i, card in enumerate(cards, 1):
-                msg += f"{i}. <b>{card.get('name')}</b>\n"
+                name = card.get('name', 'Unnamed task')
+                msg += f"{i}. <b>{name}</b>\n"
             
-            msg += "\n💡 Use `/done <number>` to mark a task as completed."
+            msg += "\n💡 Use `/done <number>` to mark a task as checked."
             send_telegram_message(chat_id, msg)
             return
             
@@ -118,17 +124,26 @@ def handle_webhook(update_data):
                 
             try:
                 index = int(parts[1]) - 1
-                card_ids = user_task_cache.get(chat_id, [])
+                cached_cards = user_task_cache.get(chat_id, [])
                 
-                if 0 <= index < len(card_ids):
-                    card_id = card_ids[index]
-                    send_telegram_message(chat_id, "⏳ Marking task as done...")
+                if 0 <= index < len(cached_cards):
+                    card = cached_cards[index]
+                    card_id = card.get('id')
+                    current_name = card.get('name', '')
                     
-                    if archive_card(card_id):
-                        # Optionally remove from local cache too or just wait for next /tasks
-                        send_telegram_message(chat_id, "✅ Task marked as done and archived!")
+                    if current_name.startswith("✅"):
+                        send_telegram_message(chat_id, "💡 This task is already checked!")
+                        return
+                        
+                    send_telegram_message(chat_id, f"⏳ Marking task '{current_name}' as checked...")
+                    
+                    new_name = f"✅ {current_name}"
+                    if update_card(card_id, name=new_name, due_complete=True):
+                        # Update local cache name so it doesn't need to re-fetch to see the check
+                        card['name'] = new_name
+                        send_telegram_message(chat_id, f"✅ Task marked as checked!")
                     else:
-                        send_telegram_message(chat_id, "❌ Failed to mark task as done.")
+                        send_telegram_message(chat_id, "❌ Failed to update task in Trello.")
                 else:
                     send_telegram_message(chat_id, "❌ Invalid task number. Use /tasks to see current numbers.")
             except ValueError:
