@@ -1,5 +1,6 @@
 import requests
 import logging
+import html
 from config import TELEGRAM_SEND_MESSAGE_URL, TRELLO_LIST_ID
 from trello_client import (
     add_task_to_trello, 
@@ -18,15 +19,24 @@ user_default_lists = {}
 # chat_id -> [{"id": "...", "name": "..."}, ...]
 user_task_cache = {} 
 
-def send_telegram_message(chat_id, text):
+def send_telegram_message(chat_id, text, parse_mode="HTML"):
     """Send a message back to Telegram user"""
     try:
         payload = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "HTML"
+            "parse_mode": parse_mode
         }
         response = requests.post(TELEGRAM_SEND_MESSAGE_URL, json=payload, timeout=10)
+        
+        if response.status_code != 200:
+            logger.error(f"Telegram API error: {response.status_code} - {response.text}")
+            # Fallback if HTML parsing failed
+            if "can't parse entities" in response.text.lower():
+                logger.info("Retrying without HTML parse mode...")
+                payload["parse_mode"] = None
+                response = requests.post(TELEGRAM_SEND_MESSAGE_URL, json=payload, timeout=10)
+        
         response.raise_for_status()
         return True
     except Exception as e:
@@ -109,7 +119,8 @@ def handle_webhook(update_data):
             msg = "📋 <b>Your Pending Tasks:</b>\n\n"
             for i, card in enumerate(cards, 1):
                 name = card.get('name', 'Unnamed task')
-                msg += f"{i}. <b>{name}</b>\n"
+                safe_name = html.escape(name)
+                msg += f"{i}. <b>{safe_name}</b>\n"
             
             msg += "\n💡 Use `/done <number>` to mark a task as checked."
             send_telegram_message(chat_id, msg)
@@ -135,7 +146,7 @@ def handle_webhook(update_data):
                         send_telegram_message(chat_id, "💡 This task is already checked!")
                         return
                         
-                    send_telegram_message(chat_id, f"⏳ Marking task '{current_name}' as checked...")
+                    send_telegram_message(chat_id, f"⏳ Marking task '{html.escape(current_name)}' as checked...")
                     
                     new_name = f"✅ {current_name}"
                     if update_card(card_id, name=new_name, due_complete=True):
