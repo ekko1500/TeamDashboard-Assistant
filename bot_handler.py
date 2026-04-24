@@ -136,8 +136,7 @@ def handle_webhook(update_data):
             return
 
         # Handle /add command
-        if text.startswith("/add"):
-        # Handle /add command
+        
         if text.startswith("/add"):
             task_text = text.replace("/add", "", 1).strip()
             
