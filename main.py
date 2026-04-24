@@ -1,53 +1,99 @@
-from fastapi import FastAPI, Request, Response, HTTPException
-from trello_service import add_task_to_trello
+from fastapi import FastAPI, Request, Response
 import logging
+import requests
+import asyncio
+from config import TELEGRAM_API_URL, WEBHOOK_URL, PORT
+from bot_handler import handle_webhook
 
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="Telegram Trello Bot API")
+
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    return {"status": "ok", "message": "Telegram Trello Bot is running"}
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    """Your single backend endpoint."""
+    """Telegram webhook endpoint"""
     try:
-        update = await request.json()
-        logger.info(f"Received update: {update}")
-
-        # 1. Extract the command and user info from 'update'
-        # This replaces your old 'handle_webhook' function's parsing logic.
-        message = update.get("message", {})
-        text = message.get("text", "")
-        chat_id = message.get("chat", {}).get("id")
-
-        if not chat_id:
-            return Response(status_code=200) # Acknowledge receipt
-
-        # 2. Handle the "/add" command
-        if text and text.startswith("/add"):
-            task = text.replace("/add", "", 1).strip()
-            if task:
-                # 3. Call your existing Trello service
-                card = add_task_to_trello(task)
-                # 4. Send a reply back to the user via Telegram API
-                await send_telegram_message(chat_id, f"✅ Added: {task}\n{card.get('shortUrl')}")
-            else:
-                await send_telegram_message(chat_id, "Usage: /add Your task here")
-
-        # ... handle /start, /help, etc. in the same way ...
-
+        update_data = await request.json()
+        # Handle update in a background task to respond quickly to Telegram
+        # Telegram expects a 200 OK within a short timeout
+        asyncio.create_task(async_handle_webhook(update_data))
         return Response(status_code=200)
-
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        # It's crucial to return 200 OK to Telegram, even on error.
-        # Otherwise, Telegram will keep retrying the failed update.
-        return Response(status_code=200)
+        logger.error(f"Error in webhook endpoint: {e}")
+        return Response(status_code=200)  # Always return 200 to Telegram
 
-async def send_telegram_message(chat_id: int, text: str):
-    """Helper function to send messages back to the user."""
-    import requests
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    requests.post(url, json=payload)
+async def async_handle_webhook(update_data):
+    """Wrapper to handle webhook data asynchronously"""
+    try:
+        handle_webhook(update_data)
+    except Exception as e:
+        logger.error(f"Async webhook handler error: {e}")
+
+def set_webhook():
+    """Set Telegram webhook on startup if URL is provided"""
+    if not WEBHOOK_URL:
+        logger.warning("No WEBHOOK_URL provided. Bot will NOT receive updates via webhook.")
+        return
+    
+    try:
+        url = f"{TELEGRAM_API_URL}/setWebhook"
+        payload = {"url": f"{WEBHOOK_URL}/webhook"}
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            logger.info(f"Webhook set successfully to {WEBHOOK_URL}/webhook")
+        else:
+            logger.error(f"Failed to set webhook: {response.text}")
+    except Exception as e:
+        logger.error(f"Error setting webhook: {e}")
+
+def run_polling():
+    """Simple polling mode for development"""
+    logger.info("Starting polling mode...")
+    last_update_id = 0
+    while True:
+        try:
+            url = f"{TELEGRAM_API_URL}/getUpdates"
+            params = {"offset": last_update_id + 1, "timeout": 30}
+            response = requests.get(url, params=params, timeout=35)
+            
+            if response.status_code == 200:
+                updates = response.json().get("result", [])
+                for update in updates:
+                    handle_webhook(update)
+                    last_update_id = update.get("update_id", last_update_id)
+            elif response.status_code == 409:
+                logger.error("Conflict: Is another bot instance running or is a webhook set?")
+                break
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
+            asyncio.run(asyncio.sleep(5))
+
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup"""
+    if WEBHOOK_URL:
+        set_webhook()
+
+if __name__ == "__main__":
+    import uvicorn
+    # If no webhook URL is set, we might want to run polling instead
+    # However, for a FastAPI app, we usually run the server.
+    # We can run polling in a separate thread/task if needed, but 
+    # usually local testing is done via uvicorn and manual testing or 
+    # by just setting WEBHOOK_URL to empty to skip webhook setup.
+    
+    if not WEBHOOK_URL:
+        # For local dev without webhook, you might want to run polling
+        # But uvicorn blocks. So we run polling in a separate process/thread
+        # only if explicitly intended. For now, let's keep it simple.
+        logger.info("Running in polling mode (local dev)...")
+        run_polling()
+    else:
+        uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=True)
