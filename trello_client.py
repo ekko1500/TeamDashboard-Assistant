@@ -67,3 +67,35 @@ def get_board_lists(board_id):
     except Exception as e:
         logger.error(f"Failed to fetch lists: {e}")
         return []
+
+def get_list_cards(list_id):
+    """Get all cards in a specific list"""
+    try:
+        url = f"https://api.trello.com/1/lists/{list_id}/cards"
+        params = {
+            "key": TRELLO_API_KEY,
+            "token": TRELLO_TOKEN,
+            "fields": "name,shortUrl"
+        }
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch cards: {e}")
+        return []
+
+def archive_card(card_id):
+    """Archive (close) a card"""
+    try:
+        url = f"https://api.trello.com/1/cards/{card_id}"
+        params = {
+            "key": TRELLO_API_KEY,
+            "token": TRELLO_TOKEN,
+            "closed": "true"
+        }
+        response = requests.put(url, params=params, timeout=10)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to archive card: {e}")
+        return False
